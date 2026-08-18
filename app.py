@@ -9,49 +9,40 @@ st.set_page_config(
 )
 
 st.title("📊 Commodity Fundamental Screener")
+st.caption("Čistá fundamentální matice s automatickým vyhodnocením BIASu")
 
-# Seznam komodit s přímým mapováním na 1. a 2. kontrakt
+# Seznam 12 komodit
 COMMODITIES = {
-    "Ropa WTI (USOIL)": {"front": "CL=F", "next": "CLB=F", "type": "OIL"},
-    "Zemní Plyn (NATGAS)": {"front": "NG=F", "next": "NGB=F", "type": "GAS"},
-    "Kukuřice (CORN)": {"front": "ZC=F", "next": "ZCB=F", "type": "AGRA"},
-    "Pšenice (WHEAT)": {"front": "ZW=F", "next": "ZWB=F", "type": "AGRA"},
-    "Sója (SOYBEAN)": {"front": "ZS=F", "next": "ZSB=F", "type": "SOY"},
-    "Káva (COFFEE)": {"front": "KC=F", "next": "KCB=F", "type": "SOFT"},
-    "Kakao (COCOA)": {"front": "CC=F", "next": "CCB=F", "type": "SOFT"},
-    "Cukr (SUGAR)": {"front": "SB=F", "next": "SBB=F", "type": "SOFT"},
-    "Zlato (GOLD)": {"front": "GC=F", "next": "GCB=F", "type": "METAL"},
-    "Stříbro (XAGUSD)": {"front": "SI=F", "next": "SIB=F", "type": "METAL"},
-    "Platina (PLATINUM)": {"front": "PL=F", "next": "PLB=F", "type": "METAL"},
-    "Měď (COPPER)": {"front": "HG=F", "next": "HGB=F", "type": "METAL"}
+    "Ropa WTI (USOIL)": {"front": "CL=F", "next": "CLB=F"},
+    "Zemní Plyn (NATGAS)": {"front": "NG=F", "next": "NGB=F"},
+    "Kukuřice (CORN)": {"front": "ZC=F", "next": "ZCB=F"},
+    "Pšenice (WHEAT)": {"front": "ZW=F", "next": "ZWB=F"},
+    "Sója (SOYBEAN)": {"front": "ZS=F", "next": "ZSB=F"},
+    "Káva (COFFEE)": {"front": "KC=F", "next": "KCB=F"},
+    "Kakao (COCOA)": {"front": "CC=F", "next": "CCB=F"},
+    "Cukr (SUGAR)": {"front": "SB=F", "next": "SBB=F"},
+    "Zlato (GOLD)": {"front": "GC=F", "next": "GCB=F"},
+    "Stříbro (XAGUSD)": {"front": "SI=F", "next": "SIB=F"},
+    "Platina (PLATINUM)": {"front": "PL=F", "next": "PLB=F"},
+    "Měď (COPPER)": {"front": "HG=F", "next": "HGB=F"}
 }
 
-def get_sector_margins():
-    margins = {}
-    try:
-        wti = yf.Ticker("CL=F").history(period="5d")['Close'].iloc[-1]
-        rb = yf.Ticker("RB=F").history(period="5d")['Close'].iloc[-1] * 42
-        ho = yf.Ticker("HO=F").history(period="5d")['Close'].iloc[-1] * 42
-        crack = round(((2 * rb) + (1 * ho) - (3 * wti)) / 3, 2)
-        margins["OIL"] = f"${crack}/bbl"
-    except:
-        margins["OIL"] = "N/A"
-
-    try:
-        beans = yf.Ticker("ZS=F").history(period="5d")['Close'].iloc[-1] / 100
-        oil = yf.Ticker("ZL=F").history(period="5d")['Close'].iloc[-1]
-        meal = yf.Ticker("ZM=F").history(period="5d")['Close'].iloc[-1]
-        crush = round((meal * 0.022) + (oil * 0.11) - beans, 2)
-        margins["SOY"] = f"${crush}/bu"
-    except:
-        margins["SOY"] = "N/A"
-        
-    return margins
+def evaluate_bias(score):
+    """Vyhodnocení celkového fundamentálního sentimentu ze skóre (-3 až +3)."""
+    if score >= 2:
+        return "🟢 SILNÝ BULLISH"
+    elif score == 1:
+        return "🟩 BULLISH"
+    elif score == 0:
+        return "⚪ NEUTRAL"
+    elif score == -1:
+        return "🟧 BEARISH"
+    else:
+        return "🔴 SILNÝ BEARISH"
 
 @st.cache_data(ttl=1800)
 def fetch_screener_data():
     results = []
-    margins = get_sector_margins()
 
     for name, config in COMMODITIES.items():
         try:
@@ -62,39 +53,61 @@ def fetch_screener_data():
                 
             p_front = front['Close'].iloc[-1]
             
-            # Pokus o stažení 2. kontraktu, v případě výpadku fallback na 5D odchylku
+            # 1. Termínová struktura (Prompt Spread)
             try:
                 next_contract = yf.Ticker(config["next"]).history(period="10d")
                 if not next_contract.empty:
                     p_next = next_contract['Close'].iloc[-1]
                     prompt_spread = round(p_front - p_next, 3)
                 else:
-                    # Fallback: Porovnání s předchozím týdnem
                     prompt_spread = round(p_front - front['Close'].iloc[-5], 3)
             except:
                 prompt_spread = round(p_front - front['Close'].iloc[-5], 3)
 
             structure = "BACKWARDATION 🟢" if prompt_spread > 0 else "CONTANGO 🔴"
-            margin_info = margins.get(config["type"], "N/A")
             
-            # Dočasný odhad pro COT a Zásoby
+            # Dočasné indikátory pro COT a Zásoby
             cot_proxy = "Net Long 🟢" if prompt_spread > 0 else "Net Short 🔴"
             inv_proxy = "Čerpání 🟢" if prompt_spread > 0 else "Přebytky 🔴"
+
+            # 2. Algoritmus pro výpočet výsledného BIASu
+            bias_score = 0
+            
+            # Hodnocení Struktury
+            if prompt_spread > 0:
+                bias_score += 1
+            else:
+                bias_score -= 1
+                
+            # Hodnocení COT tlaku
+            if "Net Long" in cot_proxy:
+                bias_score += 1
+            else:
+                bias_score -= 1
+                
+            # Hodnocení Zásob
+            if "Čerpání" in inv_proxy:
+                bias_score += 1
+            else:
+                bias_score -= 1
+
+            final_bias = evaluate_bias(bias_score)
 
             results.append({
                 "Komodita": name,
                 "Struktura": structure,
                 "Prompt Spread": prompt_spread,
-                "Sektorová Marže": margin_info,
                 "COT Managed Money": cot_proxy,
-                "Zásoby (Trend)": inv_proxy
+                "Zásoby (Trend)": inv_proxy,
+                "Výsledný Sentiment": final_bias
             })
-        except Exception as e:
+        except Exception:
             continue
             
     return pd.DataFrame(results)
 
-with st.spinner("Aktualizuji data z trhu..."):
+# --- UI ---
+with st.spinner("Vyhodnocuji fundamentální data a počítám BIAS..."):
     df_screener = fetch_screener_data()
 
 if not df_screener.empty:
