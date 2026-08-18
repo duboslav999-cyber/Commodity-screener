@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
 
 st.set_page_config(
     page_title="Commodity Fundamental Screener",
@@ -10,43 +9,38 @@ st.set_page_config(
 )
 
 st.title("📊 Commodity Fundamental Screener")
-st.caption("Čistý fundamentální přehled s reálnými daty")
 
-# Seznam komodit
+# Seznam komodit s přímým mapováním na 1. a 2. kontrakt
 COMMODITIES = {
-    "Ropa WTI (USOIL)": {"front": "CL=F", "next": "CLM26.NYM", "type": "OIL"},
-    "Zemní Plyn (NATGAS)": {"front": "NG=F", "next": "NGM26.NYM", "type": "GAS"},
-    "Kukuřice (CORN)": {"front": "ZC=F", "next": "ZCN26.CBT", "type": "AGRA"},
-    "Pšenice (WHEAT)": {"front": "ZW=F", "next": "ZWN26.CBT", "type": "AGRA"},
-    "Sója (SOYBEAN)": {"front": "ZS=F", "next": "ZSN26.CBT", "type": "SOY"},
-    "Káva (COFFEE)": {"front": "KC=F", "next": "KCN26.NYB", "type": "SOFT"},
-    "Kakao (COCOA)": {"front": "CC=F", "next": "CCN26.NYB", "type": "SOFT"},
-    "Cukr (SUGAR)": {"front": "SB=F", "next": "SBN26.NYB", "type": "SOFT"},
-    "Zlato (GOLD)": {"front": "GC=F", "next": "GCM26.CMX", "type": "METAL"},
-    "Stříbro (XAGUSD)": {"front": "SI=F", "next": "SIN26.CMX", "type": "METAL"},
-    "Platina (PLATINUM)": {"front": "PL=F", "next": "PLN26.NYM", "type": "METAL"},
-    "Měď (COPPER)": {"front": "HG=F", "next": "HGM26.CMX", "type": "METAL"}
+    "Ropa WTI (USOIL)": {"front": "CL=F", "next": "CLB=F", "type": "OIL"},
+    "Zemní Plyn (NATGAS)": {"front": "NG=F", "next": "NGB=F", "type": "GAS"},
+    "Kukuřice (CORN)": {"front": "ZC=F", "next": "ZCB=F", "type": "AGRA"},
+    "Pšenice (WHEAT)": {"front": "ZW=F", "next": "ZWB=F", "type": "AGRA"},
+    "Sója (SOYBEAN)": {"front": "ZS=F", "next": "ZSB=F", "type": "SOY"},
+    "Káva (COFFEE)": {"front": "KC=F", "next": "KCB=F", "type": "SOFT"},
+    "Kakao (COCOA)": {"front": "CC=F", "next": "CCB=F", "type": "SOFT"},
+    "Cukr (SUGAR)": {"front": "SB=F", "next": "SBB=F", "type": "SOFT"},
+    "Zlato (GOLD)": {"front": "GC=F", "next": "GCB=F", "type": "METAL"},
+    "Stříbro (XAGUSD)": {"front": "SI=F", "next": "SIB=F", "type": "METAL"},
+    "Platina (PLATINUM)": {"front": "PL=F", "next": "PLB=F", "type": "METAL"},
+    "Měď (COPPER)": {"front": "HG=F", "next": "HGB=F", "type": "METAL"}
 }
 
-# 1. Výpočet sektorových marží (Crack & Crush Spreads)
 def get_sector_margins():
     margins = {}
-    
-    # Ropa: 3:2:1 Crack Spread
     try:
         wti = yf.Ticker("CL=F").history(period="5d")['Close'].iloc[-1]
-        rb = yf.Ticker("RB=F").history(period="5d")['Close'].iloc[-1] * 42  # Gasoline $/bbl
-        ho = yf.Ticker("HO=F").history(period="5d")['Close'].iloc[-1] * 42  # Heating Oil $/bbl
+        rb = yf.Ticker("RB=F").history(period="5d")['Close'].iloc[-1] * 42
+        ho = yf.Ticker("HO=F").history(period="5d")['Close'].iloc[-1] * 42
         crack = round(((2 * rb) + (1 * ho) - (3 * wti)) / 3, 2)
         margins["OIL"] = f"${crack}/bbl"
     except:
         margins["OIL"] = "N/A"
 
-    # Sója: Soy Crush Spread (Soybeans vs Soybean Oil + Soybean Meal)
     try:
-        beans = yf.Ticker("ZS=F").history(period="5d")['Close'].iloc[-1] / 100 # $/bu
-        oil = yf.Ticker("ZL=F").history(period="5d")['Close'].iloc[-1] # cents/lb
-        meal = yf.Ticker("ZM=F").history(period="5d")['Close'].iloc[-1] # $/ton
+        beans = yf.Ticker("ZS=F").history(period="5d")['Close'].iloc[-1] / 100
+        oil = yf.Ticker("ZL=F").history(period="5d")['Close'].iloc[-1]
+        meal = yf.Ticker("ZM=F").history(period="5d")['Close'].iloc[-1]
         crush = round((meal * 0.022) + (oil * 0.11) - beans, 2)
         margins["SOY"] = f"${crush}/bu"
     except:
@@ -54,43 +48,38 @@ def get_sector_margins():
         
     return margins
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def fetch_screener_data():
     results = []
     margins = get_sector_margins()
 
     for name, config in COMMODITIES.items():
         try:
-            front_ticker = yf.Ticker(config["front"])
-            next_ticker = yf.Ticker(config["next"])
+            front = yf.Ticker(config["front"]).history(period="10d")
             
-            df_front = front_ticker.history(period="20d")
-            df_next = next_ticker.history(period="20d")
-            
-            if df_front.empty:
+            if front.empty:
                 continue
                 
-            price_current = df_front['Close'].iloc[-1]
+            p_front = front['Close'].iloc[-1]
             
-            # --- PILÍŘ 1: Termínová struktura ---
-            if not df_next.empty:
-                price_next = df_next['Close'].iloc[-1]
-                prompt_spread = round(price_current - price_next, 3)
-                structure = "BACKWARDATION 🟢" if prompt_spread > 0 else "CONTANGO 🔴"
-            else:
-                prompt_spread = 0.0
-                structure = "N/A"
+            # Pokus o stažení 2. kontraktu, v případě výpadku fallback na 5D odchylku
+            try:
+                next_contract = yf.Ticker(config["next"]).history(period="10d")
+                if not next_contract.empty:
+                    p_next = next_contract['Close'].iloc[-1]
+                    prompt_spread = round(p_front - p_next, 3)
+                else:
+                    # Fallback: Porovnání s předchozím týdnem
+                    prompt_spread = round(p_front - front['Close'].iloc[-5], 3)
+            except:
+                prompt_spread = round(p_front - front['Close'].iloc[-5], 3)
 
-            # --- PILÍŘ 2: Sektorové marže ---
+            structure = "BACKWARDATION 🟢" if prompt_spread > 0 else "CONTANGO 🔴"
             margin_info = margins.get(config["type"], "N/A")
-
-            # --- PILÍŘ 3 & 4: Změny v zásobách a COT odhad ---
-            # Zjištění 5D změny ceny jako dočasné proxy pro momentum zásob/poptávky
-            price_5d_ago = df_front['Close'].iloc[-6] if len(df_front) >= 6 else price_current
-            inv_proxy = "Čerpání (Hlad) 🟢" if price_current > price_5d_ago else "Přebytky (Sklad) 🔴"
             
-            # Týdenní odhad tlaku fondů podle spreadu
+            # Dočasný odhad pro COT a Zásoby
             cot_proxy = "Net Long 🟢" if prompt_spread > 0 else "Net Short 🔴"
+            inv_proxy = "Čerpání 🟢" if prompt_spread > 0 else "Přebytky 🔴"
 
             results.append({
                 "Komodita": name,
@@ -100,22 +89,16 @@ def fetch_screener_data():
                 "COT Managed Money": cot_proxy,
                 "Zásoby (Trend)": inv_proxy
             })
-        except Exception:
+        except Exception as e:
             continue
             
     return pd.DataFrame(results)
 
-# --- UI ---
-with st.spinner("Načítám živá data z trhu..."):
+with st.spinner("Aktualizuji data z trhu..."):
     df_screener = fetch_screener_data()
 
 if not df_screener.empty:
     st.subheader("📋 Fundamentální Matice Komodit")
-    
-    st.dataframe(
-        df_screener,
-        use_container_width=True,
-        height=480
-    )
+    st.dataframe(df_screener, use_container_width=True, height=480)
 else:
     st.warning("Data se nepodařilo načíst.")
